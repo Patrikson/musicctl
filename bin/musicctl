@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+
+ensure_running() {
+  # Launch Music hidden, without focusing; if already running, this is harmless.
+  /usr/bin/osascript <<'APPLESCRIPT'
+tell application "System Events" to set isRunning to exists (processes where name is "Music")
+if not isRunning then
+	do shell script "open -gj -a Music"
+	delay 0.4
+end if
+APPLESCRIPT
+}
+
+play_query() {
+  query="$*"
+  QUERY_STR="$query" /usr/bin/osascript <<'APPLESCRIPT'
+set q to (system attribute "QUERY_STR")
+
+-- Ensure Music is running (background)
+tell application "System Events" to set isRunning to exists (processes where name is "Music")
+if not isRunning then
+	do shell script "open -gj -a Music"
+	delay 0.4
+end if
+
+tell application "Music"
+	-- 1) Playlists: exact, then partial
+	set plistExact to (every user playlist whose name is q)
+	if (count of plistExact) > 0 then
+		play item 1 of plistExact
+		return
+	end if
+
+	set plistPart to (every user playlist whose name contains q)
+	if (count of plistPart) > 0 then
+		play item 1 of plistPart
+		return
+	end if
+
+	-- 2) Albums: exact, then partial (start at track 1 when possible)
+	set albumExactTracks to (every track of library playlist 1 whose album is q)
+	if (count of albumExactTracks) > 0 then
+		try
+			set firstCut to (first track of library playlist 1 whose album is q and disc number is 1 and track number is 1)
+			play firstCut
+			return
+		on error
+			play item 1 of albumExactTracks
+			return
+		end try
+	end if
+
+	set albumPartTracks to (every track of library playlist 1 whose album contains q)
+	if (count of albumPartTracks) > 0 then
+		set albumName to album of item 1 of albumPartTracks
+		try
+			set firstCut2 to (first track of library playlist 1 whose album is albumName and disc number is 1 and track number is 1)
+			play firstCut2
+			return
+		on error
+			play item 1 of albumPartTracks
+			return
+		end try
+	end if
+
+	-- 3) Tracks or Artists
+	set trks to (every track of library playlist 1 whose name contains q or artist contains q or album artist contains q)
+	if (count of trks) > 0 then
+		play item 1 of trks
+		return
+	end if
+end tell
+APPLESCRIPT
+}
+
+case "${cmd}" in
+  ""|"play")
+    if [ $# -eq 0 ]; then
+      ensure_running
+      /usr/bin/osascript -e 'tell application "Music" to play'
+    else
+      ensure_running
+      play_query "$@"
+    fi
+    ;;
+  "pause")
+    /usr/bin/osascript -e 'tell application "Music" to pause'
+    ;;
+  "toggle"|"playpause")
+    /usr/bin/osascript -e 'tell application "Music" to playpause'
+    ;;
+  "next")
+    /usr/bin/osascript -e 'tell application "Music" to next track'
+    ;;
+  "prev"|"previous")
+    /usr/bin/osascript -e 'tell application "Music" to previous track'
+    ;;
+  "info")
+    /usr/bin/osascript -e 'tell application "Music" to get name of current track & " – " & artist of current track'
+    ;;
+  "help"|"--help"|"-h")
+    cat <<EOF
+musicctl — tiny Apple Music CLI
+
+Usage:
+  musicctl play                     # resume
+  musicctl play <query...>          # play playlist/album/track/artist by search
+  musicctl pause|toggle|next|prev
+  musicctl info
+
+Short aliases (installed via symlinks): play, pause, next, prev, info
+EOF
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac
